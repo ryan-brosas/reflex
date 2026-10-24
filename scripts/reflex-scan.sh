@@ -28,8 +28,8 @@ usage=${REFLEX_USAGE:-}
 now=$(date +%s)
 
 # mtime <path>: seconds since the epoch. BSD stat (macOS) spells it
-# -f %m, GNU stat (Linux) spells it -c %Y. A folder neither can read is as
-# old as now, which is what the caller assumes when the value is missing.
+# -f %m, GNU stat (Linux) spells it -c %Y. An unreadable folder returns 0;
+# the callers substitute now for that sentinel.
 mtime() {
   stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0
 }
@@ -70,7 +70,8 @@ scan_one() {
     age=$(( (now - ct) / 3600 ))
   else
     m=$(mtime "$d")
-    [ "$m" -gt 0 ] 2>/dev/null || m=$now
+    case "$m" in ''|*[!0-9]*) m=$now ;; esac
+    [ "$m" -gt 0 ] || m=$now
     age=$(( (now - m) / 3600 ))
   fi
   head=$(cat "$d/.git/HEAD" 2>/dev/null || true)
@@ -100,7 +101,8 @@ scan_parent() {
   newest=$(printf '%s\n' "$held" | while IFS= read -r r; do git -C "$r" log -1 --format=%ct 2>/dev/null; done | sort -n | tail -1)
   newest=${newest:-0}
   [ "$newest" -eq 0 ] && newest=$(mtime "$d")
-  [ "$newest" -gt 0 ] 2>/dev/null || newest=$now
+  case "$newest" in ''|*[!0-9]*) newest=$now ;; esac
+  [ "$newest" -gt 0 ] || newest=$now
   uses=0
   if [ -n "$usage" ] && [ -f "$usage" ]; then
     uses=$(grep -cxF "$d" "$usage" 2>/dev/null || true)

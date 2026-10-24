@@ -56,6 +56,7 @@ Item {
   property bool pairPaired: false
   property bool pairExpired: false
   readonly property string pairFile: (Quickshell.env("HOME") || "") + "/.local/state/reflex/pair.txt"
+  readonly property string pairQrFile: (Quickshell.env("HOME") || "") + "/.local/state/reflex/pair.png"
   property bool namingNew: false
   property string pendingRequest: ""
   property string pendingHarness: ""
@@ -222,7 +223,7 @@ Item {
 
   function pairQrReady(code) {
     if (Number(code) !== 0) { root.pairError = "qrencode is not installed"; return }
-    root.pairImage = "file:///tmp/reflex-pair.png?" + Date.now()
+    root.pairImage = "file://" + root.pairQrFile + "?" + Date.now()
     if (typeof pairWindow.requestActivate === "function") pairWindow.requestActivate()
     pairFocus.forceActiveFocus()
     pairFocusTimer.restart()
@@ -1271,7 +1272,7 @@ Item {
   Process {
     id: pairQr
     running: false
-    command: ["/usr/bin/qrencode", "-o", "/tmp/reflex-pair.png", "-s", "6", "-m", "2", root.pairUrl]
+    command: ["/usr/bin/qrencode", "-o", root.pairQrFile, "-s", "6", "-m", "2", root.pairUrl]
     onExited: function(code, status) { root.pairQrReady(code) }
   }
 
