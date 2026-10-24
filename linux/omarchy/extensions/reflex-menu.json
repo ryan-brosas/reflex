@@ -1,0 +1,56 @@
+{
+  "reflex": {
+    "icon": "󰋗",
+    "label": "Reflex",
+    "description": "Coding-agent questions, sessions and the ask bar"
+  },
+  "reflex.questions": {
+    "icon": "󰋗",
+    "label": "Answer agent questions",
+    "description": "Every session and every question, in the bar panel",
+    "action": "omarchy-shell shell summon reflex.sessions '{}'",
+    "when": "command -v omarchy-shell >/dev/null 2>&1"
+  },
+  "reflex.pair": {
+    "icon": "󰐲",
+    "label": "Pair a phone",
+    "description": "Show a one-time QR for the Reflex phone page",
+    "action": "omarchy-shell shell summon reflex '{\"pair\":true}'",
+    "when": "command -v omarchy-shell >/dev/null 2>&1 && command -v qrencode >/dev/null 2>&1"
+  },
+  "reflex.settings": {
+    "icon": "󰒓",
+    "label": "Reflex settings",
+    "description": "Rail, routing, projects, phone and machine controls",
+    "action": "omarchy-shell shell summon reflex '{\"settings\":true}'",
+    "when": "command -v omarchy-shell >/dev/null 2>&1"
+  },
+  "reflex.setup": {
+    "icon": "󰋼",
+    "label": "Set up Reflex",
+    "description": "Guided checks, pairing and first open",
+    "action": "omarchy-shell shell summon reflex '{\"setup\":true}'",
+    "when": "command -v omarchy-shell >/dev/null 2>&1"
+  },
+  "reflex.machines": {
+    "icon": "󰒍",
+    "label": "SSH machines",
+    "description": "Connect another machine's herdr and route to its agents",
+    "action": "omarchy-shell shell summon reflex '{\"machines\":true}'",
+    "when": "command -v omarchy-shell >/dev/null 2>&1"
+  },
+  "reflex.doctor": {
+    "icon": "󰒓",
+    "label": "Run doctor",
+    "description": "Open the daemon, herdr, plugin, session and pairing checks",
+    "action": "omarchy-shell shell summon reflex '{\"doctor\":true}'",
+    "when": "command -v omarchy-shell >/dev/null 2>&1"
+  },
+  "reflex.ask": {
+    "icon": "󰜴",
+    "label": "Ask an agent",
+    "description": "Route a request with Reflex and Jev",
+    "action": "omarchy-shell shell summon reflex '{\"mode\":\"ask\"}'",
+    "when": "command -v omarchy-shell >/dev/null 2>&1"
+  }
+}

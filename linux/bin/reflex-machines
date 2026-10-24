@@ -1,0 +1,375 @@
+#!/usr/bin/env bash
+# Reflex SSH machine tunnels.
+#
+# A saved profile is one SSH target plus the remote herdr socket. The tunnel
+# forwards that socket to $REFLEX_DATA/machines/<label>.sock, which is exactly
+# where reflexd already looks for a machine. herdr machine profiles are not
+# required: the daemon only needs the socket and the name in machines/list.
+set -euo pipefail
+
+config="${XDG_CONFIG_HOME:-$HOME/.config}/reflex"
+profiles="$config/machines"
+env_file="$config/env"
+data="${REFLEX_DATA:-}"
+if [ -z "$data" ] && [ -r "$env_file" ]; then
+  data=$(sed -n 's/^REFLEX_DATA=//p' "$env_file" | tail -n 1)
+fi
+[ -n "$data" ] || data="${XDG_STATE_HOME:-$HOME/.local/state}/reflex"
+machines="$data/machines"
+mkdir -p "$profiles" "$machines"
+chmod 700 "$profiles" "$machines" 2>/dev/null || true
+
+# The scanner is installed next to reflexd; running it over ssh keeps the
+# remote index identical to this machine's (same fields, same pruning).
+scan_script=${REFLEX_SCAN:-}
+if [ -z "$scan_script" ]; then
+  for candidate in "$(cd "$(dirname "$0")/.." && pwd)/scripts/reflex-scan.sh" "$(cd "$(dirname "$0")/../.." && pwd)/scripts/reflex-scan.sh"; do
+    [ -r "$candidate" ] && { scan_script=$candidate; break; }
+  done
+fi
+remote_roots=${REFLEX_MACHINE_ROOTS:-'$HOME/Projects:$HOME/src:$HOME/VCS:$HOME/code'}
+index_secs=${REFLEX_MACHINE_INDEX_SECS:-900}
+
+usage() {
+  cat <<'EOF'
+usage: reflex-machines <command> [args]
+
+  list [--json]                 profiles and tunnel state
+  add <label> <ssh-target> [remote-socket] [port] [identity-file] [known-hosts-file]
+  remove <label>
+  up <label>                    start the SSH tunnel
+  down <label>                  stop it and keep the profile disabled
+  reconcile                     start enabled profiles, stop disabled ones
+  index [label]                 scan remote project folders through the tunnel
+  status <label>
+
+The remote socket defaults to ~/.config/herdr/herdr.sock. Use an absolute
+path when the remote herdr uses a different location. The tunnel binds the
+local end under $REFLEX_DATA/machines/<label>.sock. Folder scans write
+$REFLEX_DATA/machines/<label>.folders, the cache reflexd already reads.
+EOF
+}
+
+valid_label() {
+  printf '%s' "$1" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$'
+}
+
+profile_file() { printf '%s/%s.conf' "$profiles" "$1"; }
+unit_for() { printf 'reflex-machine-%s.service' "$1"; }
+
+load_profile() {
+  local file label
+  label=$1
+  file=$(profile_file "$label")
+  [ -r "$file" ] || { echo "unknown machine: $label" >&2; return 1; }
+  SSH_TARGET=""
+  REMOTE_SOCKET=""
+  SSH_PORT="22"
+  SSH_IDENTITY=""
+  SSH_KNOWN_HOSTS=""
+  ENABLED="1"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      SSH_TARGET=*) SSH_TARGET=${line#SSH_TARGET=} ;;
+      REMOTE_SOCKET=*) REMOTE_SOCKET=${line#REMOTE_SOCKET=} ;;
+      SSH_PORT=*) SSH_PORT=${line#SSH_PORT=} ;;
+      SSH_IDENTITY=*) SSH_IDENTITY=${line#SSH_IDENTITY=} ;;
+      SSH_KNOWN_HOSTS=*) SSH_KNOWN_HOSTS=${line#SSH_KNOWN_HOSTS=} ;;
+      ENABLED=*) ENABLED=${line#ENABLED=} ;;
+    esac
+  done < "$file"
+  [ -n "$SSH_TARGET" ] || { echo "profile $label has no SSH_TARGET" >&2; return 1; }
+  [ -n "$REMOTE_SOCKET" ] || REMOTE_SOCKET="$HOME/.config/herdr/herdr.sock"
+  [ -n "$SSH_PORT" ] || SSH_PORT=22
+}
+
+write_profile() {
+  local label target socket port enabled identity known_hosts file
+  label=$1
+  target=$2
+  socket=$3
+  port=$4
+  enabled=$5
+  identity=${6:-}
+  known_hosts=${7:-}
+  file=$(profile_file "$label")
+  umask 077
+  {
+    printf 'SSH_TARGET=%s\n' "$target"
+    printf 'REMOTE_SOCKET=%s\n' "$socket"
+    printf 'SSH_PORT=%s\n' "$port"
+    [ -n "$identity" ] && printf 'SSH_IDENTITY=%s\n' "$identity"
+    [ -n "$known_hosts" ] && printf 'SSH_KNOWN_HOSTS=%s\n' "$known_hosts"
+    printf 'ENABLED=%s\n' "$enabled"
+  } > "$file"
+}
+
+local_socket() { printf '%s/%s.sock' "$machines" "$1"; }
+index_file() { printf '%s/%s.folders' "$machines" "$1"; }
+stamp_file() { printf '%s/%s.indexed' "$machines" "$1"; }
+
+unit_active() {
+  systemctl --user is-active --quiet "$(unit_for "$1")" 2>/dev/null
+}
+
+mtime() {
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
+}
+
+# Scan the remote's project roots through the tunnel that is already up. The
+# output format is reflex-scan.sh's; prefixing the machine name is exactly what
+# daemon/Index.bend expects for a folder on another machine.
+scan_folders() {
+  local label target port tmp count
+  label=$1
+  load_profile "$label" >/dev/null 2>&1 || return 1
+  target=$SSH_TARGET
+  port=$SSH_PORT
+  unit_active "$label" || return 1
+  [ -n "$scan_script" ] && [ -r "$scan_script" ] || return 1
+
+  tmp="$machines/.$label.folders.tmp"
+  local identity_opt=() known_opt=()
+  [ -n "$SSH_IDENTITY" ] && identity_opt=(-i "$SSH_IDENTITY")
+  [ -n "$SSH_KNOWN_HOSTS" ] && known_opt=(-o UserKnownHostsFile="$SSH_KNOWN_HOSTS" -o StrictHostKeyChecking=accept-new)
+  if ! ssh -T \
+      "${identity_opt[@]}" "${known_opt[@]}" \
+      -o BatchMode=yes \
+      -o ConnectTimeout=10 \
+      -p "$port" \
+      "$target" \
+      "tmp=\$(mktemp) || exit 1; cat > \"\$tmp\"; chmod 700 \"\$tmp\"; REFLEX_ROOTS=\"$remote_roots\" REFLEX_SCAN_DEPTH=\"${REFLEX_MACHINE_DEPTH:-6}\" sh \"\$tmp\"; rc=\$?; rm -f \"\$tmp\"; exit \$rc" \
+      < "$scan_script" 2>/dev/null \
+      | awk -v m="$label" 'NF { print m ":" $0 }' > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  count=$(grep -c . "$tmp" 2>/dev/null || true)
+  if [ "${count:-0}" -eq 0 ]; then
+    rm -f "$tmp"
+    return 1
+  fi
+  chmod 600 "$tmp"
+  mv "$tmp" "$(index_file "$label")"
+  printf '%s\t%s\n' "$(date +%s)" "$count" > "$machines/.$label.indexed.tmp"
+  chmod 600 "$machines/.$label.indexed.tmp"
+  mv "$machines/.$label.indexed.tmp" "$(stamp_file "$label")"
+}
+
+# The tunnel reconciler runs every 30 s; folder scans are heavier, so only do
+# one when the cache is missing or older than REFLEX_MACHINE_INDEX_SECS.
+index_due() {
+  local file label stamp now age
+  now=$(date +%s)
+  for file in "$profiles"/*.conf; do
+    [ -e "$file" ] || continue
+    label=$(basename "$file" .conf)
+    valid_label "$label" || continue
+    load_profile "$label" >/dev/null 2>&1 || continue
+    [ "$ENABLED" = "1" ] || continue
+    unit_active "$label" || continue
+    stamp=$(stamp_file "$label")
+    age=$((now - $(mtime "$stamp")))
+    if [ ! -r "$stamp" ] || [ "$age" -ge "$index_secs" ]; then
+      scan_folders "$label" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
+write_list() {
+  local tmp label file
+  tmp="$machines/list.tmp"
+  : > "$tmp"
+  for file in "$profiles"/*.conf; do
+    [ -e "$file" ] || continue
+    label=$(basename "$file" .conf)
+    valid_label "$label" || continue
+    load_profile "$label" >/dev/null 2>&1 || continue
+    [ "$ENABLED" = "1" ] || continue
+    unit_active "$label" || continue
+    printf '%s\n' "$label" >> "$tmp"
+  done
+  mv "$tmp" "$machines/list"
+  chmod 600 "$machines/list" 2>/dev/null || true
+}
+
+start_tunnel() {
+  local label target socket port local_unit local_sock identity_opt=() known_opt=()
+  label=$1
+  load_profile "$label"
+  target=$SSH_TARGET
+  socket=$REMOTE_SOCKET
+  port=$SSH_PORT
+  [ -n "$SSH_IDENTITY" ] && identity_opt=(-i "$SSH_IDENTITY")
+  [ -n "$SSH_KNOWN_HOSTS" ] && known_opt=(-o UserKnownHostsFile="$SSH_KNOWN_HOSTS" -o StrictHostKeyChecking=accept-new)
+  local_unit=$(unit_for "$label")
+  local_sock=$(local_socket "$label")
+  systemctl --user reset-failed "$local_unit" >/dev/null 2>&1 || true
+  if unit_active "$label"; then
+    write_list
+    return 0
+  fi
+  rm -f "$local_sock"
+  systemd-run --user \
+    --unit="$local_unit" \
+    --collect \
+    --property=Restart=always \
+    --property=RestartSec=2 \
+    --property=StartLimitIntervalSec=0 \
+    --property=KillMode=control-group \
+    /usr/bin/ssh -N -T \
+      "${identity_opt[@]}" "${known_opt[@]}" \
+      -o BatchMode=yes \
+      -o ConnectTimeout=10 \
+      -o ExitOnForwardFailure=yes \
+      -o ServerAliveInterval=15 \
+      -o ServerAliveCountMax=3 \
+      -o StreamLocalBindUnlink=yes \
+      -p "$port" \
+      -L "$local_sock:$socket" \
+      "$target" >/dev/null
+  write_list
+}
+
+stop_tunnel() {
+  local label unit
+  label=$1
+  unit=$(unit_for "$label")
+  systemctl --user stop "$unit" >/dev/null 2>&1 || true
+  rm -f "$(local_socket "$label")"
+  write_list
+}
+
+cmd_list() {
+  local json label active enabled count file folders indexed
+  json=0
+  [ "${1:-}" = "--json" ] && json=1
+  if [ "$json" = "1" ]; then
+    printf '['
+    count=0
+    for file in "$profiles"/*.conf; do
+      [ -e "$file" ] || continue
+      label=$(basename "$file" .conf)
+      valid_label "$label" || continue
+      load_profile "$label" >/dev/null 2>&1 || continue
+      active=false
+      unit_active "$label" && active=true
+      enabled=false
+      [ "$ENABLED" = "1" ] && enabled=true
+      folders=0
+      [ -r "$(index_file "$label")" ] && folders=$(grep -c . "$(index_file "$label")" 2>/dev/null || true)
+      indexed=0
+      [ -r "$(stamp_file "$label")" ] && indexed=$(cut -f1 "$(stamp_file "$label")" 2>/dev/null || true)
+      case "$indexed" in ''|*[!0-9]*) indexed=0 ;; esac
+      [ "$count" -gt 0 ] && printf ','
+      jq -cn --arg label "$label" --arg target "$SSH_TARGET" --arg socket "$REMOTE_SOCKET" --arg port "$SSH_PORT" --argjson active "$active" --argjson enabled "$enabled" --argjson folders "${folders:-0}" --argjson indexed "${indexed:-0}" '{label:$label,target:$target,remote_socket:$socket,port:$port,active:$active,enabled:$enabled,folders:$folders,indexed:$indexed}'
+      count=$((count + 1))
+    done
+    printf ']\n'
+  else
+    for file in "$profiles"/*.conf; do
+      [ -e "$file" ] || continue
+      label=$(basename "$file" .conf)
+      valid_label "$label" || continue
+      load_profile "$label" >/dev/null 2>&1 || continue
+      if unit_active "$label"; then active=active; else active=down; fi
+      folders=0
+      [ -r "$(index_file "$label")" ] && folders=$(grep -c . "$(index_file "$label")" 2>/dev/null || true)
+      printf '%-24s %-6s %s -> %s:%s  %s folders\n' "$label" "$active" "$SSH_TARGET" "$REMOTE_SOCKET" "$SSH_PORT" "${folders:-0}"
+    done
+  fi
+}
+
+cmd_add() {
+  local label target socket port
+  label=${1:-}
+  target=${2:-}
+  socket=${3:-"$HOME/.config/herdr/herdr.sock"}
+  port=${4:-22}
+  [ -n "$label" ] && [ -n "$target" ] || { usage; exit 2; }
+  valid_label "$label" || { echo "invalid label: $label" >&2; exit 2; }
+  write_profile "$label" "$target" "$socket" "$port" 1 "${5:-}" "${6:-}"
+  start_tunnel "$label"
+  scan_folders "$label" >/dev/null 2>&1 || true
+  printf '%s\n' "$label"
+}
+
+cmd_remove() {
+  local label
+  label=${1:-}
+  [ -n "$label" ] || { usage; exit 2; }
+  valid_label "$label" || exit 2
+  stop_tunnel "$label"
+  rm -f "$(profile_file "$label")"
+  rm -f "$(local_socket "$label")"
+  rm -f "$(index_file "$label")" "$(stamp_file "$label")"
+  write_list
+}
+
+cmd_enable() {
+  local label
+  label=${1:-}
+  [ -n "$label" ] || { usage; exit 2; }
+  load_profile "$label"
+  write_profile "$label" "$SSH_TARGET" "$REMOTE_SOCKET" "$SSH_PORT" 1 "$SSH_IDENTITY" "$SSH_KNOWN_HOSTS"
+  start_tunnel "$label"
+  scan_folders "$label" >/dev/null 2>&1 || true
+}
+
+cmd_disable() {
+  local label
+  label=${1:-}
+  [ -n "$label" ] || { usage; exit 2; }
+  load_profile "$label"
+  write_profile "$label" "$SSH_TARGET" "$REMOTE_SOCKET" "$SSH_PORT" 0 "$SSH_IDENTITY" "$SSH_KNOWN_HOSTS"
+  stop_tunnel "$label"
+}
+
+cmd_reconcile() {
+  local file label
+  for file in "$profiles"/*.conf; do
+    [ -e "$file" ] || continue
+    label=$(basename "$file" .conf)
+    valid_label "$label" || continue
+    load_profile "$label" >/dev/null 2>&1 || continue
+    if [ "$ENABLED" = "1" ]; then
+      start_tunnel "$label" >/dev/null 2>&1 || true
+    else
+      stop_tunnel "$label" >/dev/null 2>&1 || true
+    fi
+  done
+  write_list
+  index_due
+}
+
+cmd_status() {
+  local label
+  label=${1:-}
+  [ -n "$label" ] || { usage; exit 2; }
+  load_profile "$label"
+  if unit_active "$label"; then echo active; else echo down; fi
+}
+
+cmd_index() {
+  local label=${1:-}
+  if [ -n "$label" ]; then
+    scan_folders "$label"
+  else
+    index_due
+  fi
+}
+
+case "${1:-}" in
+  list) shift; cmd_list "${1:-}" ;;
+  add) shift; cmd_add "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
+  remove) shift; cmd_remove "${1:-}" ;;
+  up) shift; label=${1:-}; [ -n "$label" ] || { usage; exit 2; }; cmd_enable "$label"; cmd_index "$label" ;;
+  down) shift; cmd_disable "${1:-}" ;;
+  enable) shift; cmd_enable "${1:-}" ;;
+  disable) shift; cmd_disable "${1:-}" ;;
+  reconcile) cmd_reconcile ;;
+  index) shift; cmd_index "${1:-}" ;;
+  status) shift; cmd_status "${1:-}" ;;
+  -h|--help|"") usage ;;
+  *) usage; exit 2 ;;
+esac

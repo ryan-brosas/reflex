@@ -1,0 +1,14 @@
+[Unit]
+Description=reflexd — routing and dispatch for your coding agents
+Documentation=https://github.com/ryan-brosas/reflex
+After=default.target
+
+[Service]
+Type=simple
+EnvironmentFile=@ENVFILE@
+ExecStart=@PREFIX@/reflexd-service
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

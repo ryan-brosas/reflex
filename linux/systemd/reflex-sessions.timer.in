@@ -1,0 +1,10 @@
+[Unit]
+Description=Index earlier Reflex sessions
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=120s
+Unit=reflex-sessions.service
+
+[Install]
+WantedBy=timers.target

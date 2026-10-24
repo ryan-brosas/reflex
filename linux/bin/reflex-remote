@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Turn the phone-facing HTTP endpoint on or off. Pairing needs reflexd reachable
+# from the phone; the bearer token still protects every API route, and /api/pair
+# only accepts the one-time code in pair.txt.
+set -euo pipefail
+
+envfile="$HOME/.config/reflex/env"
+mode="${1:-status}"
+
+port=47823
+if [ -r "$envfile" ]; then
+  value=$(sed -n 's/^REFLEX_PORT=//p' "$envfile" | tail -n 1)
+  case "$value" in
+    ''|*[!0-9]*) ;;
+    *) port=$value ;;
+  esac
+fi
+
+case "$mode" in
+  status)
+    listens=$(ss -ltn 2>/dev/null | awk -v p=":$port" '$4 ~ p "$" {print $4}')
+    if printf '%s\n' "$listens" | grep -qE "^(0\\.0\\.0\\.0|\\*|\\[::\\]):$port$"; then
+      echo "remote"
+    elif printf '%s\n' "$listens" | grep -qE "^(127\\.0\\.0\\.1|\\[::1\\]):$port$"; then
+      echo "local"
+    else
+      echo "down"
+    fi
+    ;;
+  rotate)
+    tokenfile="$HOME/.config/reflex/token"
+    mkdir -p "$(dirname "$tokenfile")" "$(dirname "$envfile")"
+    touch "$envfile"
+    chmod 600 "$envfile"
+    umask 077
+    head -c 32 /dev/urandom | base64 -w0 | tr '+/' '-_' | cut -c1-43 > "$tokenfile"
+    chmod 600 "$tokenfile"
+    token=$(cat "$tokenfile")
+    if grep -q '^REFLEX_TOKEN=' "$envfile"; then
+      sed -i "s|^REFLEX_TOKEN=.*|REFLEX_TOKEN=$token|" "$envfile"
+    else
+      printf 'REFLEX_TOKEN=%s\n' "$token" >> "$envfile"
+    fi
+    systemctl --user restart reflexd.service
+    i=0
+    while [ "$i" -lt 40 ]; do
+      if curl -fsS "http://127.0.0.1:$port/api/health" >/dev/null 2>&1; then
+        echo "rotated"
+        exit 0
+      fi
+      sleep 0.25
+      i=$((i + 1))
+    done
+    echo "reflexd did not answer on port $port" >&2
+    exit 1
+    ;;
+  on|off)
+    if [ "$mode" = on ]; then bind=0.0.0.0; else bind=127.0.0.1; fi
+    mkdir -p "$(dirname "$envfile")"
+    touch "$envfile"
+    chmod 600 "$envfile"
+    if grep -q '^REFLEX_BIND=' "$envfile"; then
+      sed -i "s/^REFLEX_BIND=.*/REFLEX_BIND=$bind/" "$envfile"
+    else
+      printf 'REFLEX_BIND=%s\n' "$bind" >> "$envfile"
+    fi
+    systemctl --user restart reflexd.service
+    i=0
+    while [ "$i" -lt 40 ]; do
+      if curl -fsS "http://127.0.0.1:$port/api/health" >/dev/null 2>&1; then
+        echo "$mode"
+        exit 0
+      fi
+      sleep 0.25
+      i=$((i + 1))
+    done
+    echo "reflexd did not answer on port $port" >&2
+    exit 1
+    ;;
+  *)
+    echo "usage: reflex-remote [on|off|status|rotate]" >&2
+    exit 2
+    ;;
+esac

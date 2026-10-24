@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Read a copied local file or image from the Wayland clipboard and print one
+# absolute path per line. The ask window appends those paths to its request.
+# Text clipboards are deliberately ignored: only files and images are
+# attachments, and the daemon/agent already sees a pasted string.
+set -euo pipefail
+
+command -v wl-paste >/dev/null 2>&1 || exit 1
+
+types=$(wl-paste --list-types 2>/dev/null || true)
+
+# Decode a local file:// URI. Percent escapes and a localhost authority
+# are part of text/uri-list; the consumer needs a real filesystem path.
+file_uri_path() {
+  python3 - "$1" <<'PY'
+import sys, urllib.parse
+parsed = urllib.parse.urlsplit(sys.argv[1])
+if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+    raise SystemExit(1)
+print(urllib.parse.unquote(parsed.path))
+PY
+}
+
+if printf '%s\n' "$types" | grep -qx 'text/uri-list'; then
+  found=0
+  while IFS= read -r uri; do
+    uri=${uri%$'\r'}
+    case "$uri" in
+      ""|\#*) continue ;;
+      file://*)
+        path=$(file_uri_path "$uri") || continue
+        [ -n "$path" ] || continue
+        printf '%s\n' "$path"
+        found=1
+        ;;
+    esac
+  done < <(wl-paste -n -t text/uri-list 2>/dev/null || true)
+  if [ "$found" -eq 1 ]; then exit 0; fi
+fi
+
+mime=$(printf '%s\n' "$types" | grep -m1 '^image/' || true)
+[ -n "$mime" ] || exit 1
+
+case "$mime" in
+  image/png) ext=png ;;
+  image/jpeg) ext=jpg ;;
+  image/webp) ext=webp ;;
+  image/gif) ext=gif ;;
+  image/bmp) ext=bmp ;;
+  *) ext=bin ;;
+esac
+
+dir="${XDG_CACHE_HOME:-$HOME/.cache}/reflex/attachments"
+mkdir -p "$dir"
+tmp=$(mktemp "$dir/.paste-XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+if ! wl-paste -n -t "$mime" > "$tmp"; then
+  exit 1
+fi
+if [ ! -s "$tmp" ]; then
+  exit 1
+fi
+out="$dir/paste-${tmp##*/.paste-}.$ext"
+mv "$tmp" "$out"
+trap - EXIT
+printf '%s\n' "$out"

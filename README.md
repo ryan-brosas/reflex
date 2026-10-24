@@ -81,8 +81,9 @@ its safety rules are stated as laws and machine-checked (`daemon/LAWS.bend`).
 
 ## Build and run
 
-Building also needs Bend 2.0.37 (`curl -fsSL https://bend-lang.com/install.sh | sh`)
-and Xcode / Swift 6.
+Building also needs Bend 2.0.39 (`curl -fsSL https://bend-lang.com/install.sh | sh`)
+and Xcode / Swift 6. The Linux layer can install the pinned version locally with
+`linux/fetch-bend.sh`.
 
 ```sh
 scripts/build-app.sh          # reflexd + Reflex.app → build/Reflex.app

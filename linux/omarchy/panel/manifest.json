@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "reflex.sessions",
+  "name": "Reflex Sessions",
+  "version": "0.1.0",
+  "author": "Ryan Brosas",
+  "license": "MIT",
+  "description": "Who is working, who waits on you, and one click to their question — from reflexd.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "barWidget": "Bar.qml"
+  },
+  "barWidget": {
+    "displayName": "Reflex",
+    "description": "A question count when an agent waits on you, a dim glyph when idle or herdr is offline. Click for questions and sessions; right-click for the ask bar.",
+    "category": "AI",
+    "aliases": [
+      "reflex",
+      "sessions",
+      "agents"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

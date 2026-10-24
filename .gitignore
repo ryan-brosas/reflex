@@ -2,3 +2,5 @@ build/
 app/.build/
 .jev-fabric-native/
 *.c.tmp
+__pycache__/
+/.pi/

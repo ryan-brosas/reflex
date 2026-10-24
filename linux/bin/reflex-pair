@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Create a one-time phone pairing code and print the URL to encode as a QR.
+# The code is never the phone token: /api/pair trades it once and wipes it;
+# this helper also wipes it after ten minutes if the phone never scans.
+set -euo pipefail
+
+if ! command -v qrencode >/dev/null 2>&1; then
+  echo "qrencode is not installed; install it to show the pairing QR" >&2
+  exit 1
+fi
+
+state="${XDG_STATE_HOME:-$HOME/.local/state}/reflex"
+mkdir -p "$state"
+chmod 700 "$state" 2>/dev/null || true
+file="$state/pair.txt"
+
+# Pairing is an explicit remote action: make reflexd reachable from the
+# phone, but keep the bearer token on every API route. reflex-remote off
+# restores the loopback bind.
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -x "$here/reflex-remote" ]; then
+  "$here/reflex-remote" on >/dev/null 2>&1 || true
+fi
+
+code=$(openssl rand -hex 16)
+umask 077
+tmp=$(mktemp "$state/.pair.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+printf '%s' "$code" > "$tmp"
+chmod 600 "$tmp"
+mv -f "$tmp" "$file"
+trap - EXIT
+
+host="${REFLEX_PAIR_HOST:-}"
+if [ -z "$host" ] && command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; then
+  host=$(tailscale ip -4 2>/dev/null | head -n 1 || true)
+fi
+if [ -z "$host" ]; then
+  # Prefer the physical LAN address. The default route can point at WARP or
+  # another overlay and give the phone an address it cannot reach.
+  host=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -E '^192\.168\.' | head -n 1 || true)
+fi
+if [ -z "$host" ]; then
+  host=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -E '^(10\.|172\.(1[6-9]|2[0-9]|3[01]))\.' | head -n 1 || true)
+fi
+if [ -z "$host" ]; then
+  host=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit } }' || true)
+fi
+[ -n "$host" ] || host=127.0.0.1
+
+port="${REFLEX_PORT:-}"
+if [ -z "$port" ] && [ -r "$HOME/.config/reflex/env" ]; then
+  port=$(sed -n 's/^REFLEX_PORT=//p' "$HOME/.config/reflex/env" | tail -n 1)
+fi
+case "$port" in
+  ''|*[!0-9]*) port=47823 ;;
+esac
+
+# Expire without another service. Compare when the timer fires, not at launch.
+# Pass paths and the code as arguments so a home directory with quotes or
+# spaces cannot change the shell fragment.
+nohup sh -c 'sleep 600; current=$(cat "$1" 2>/dev/null || true); [ "$current" = "$2" ] && : > "$1"' _ "$file" "$code" >/dev/null 2>&1 &
+disown 2>/dev/null || true
+
+echo "http://$host:$port/?p=$code"

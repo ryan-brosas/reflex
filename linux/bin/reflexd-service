@@ -1,0 +1,18 @@
+#!/bin/sh
+# reflexd's service entry point.
+#
+# reflexd shells out to jev-fabric for routing, and jev-fabric reads its
+# provider and credential from the environment. On this stack the credential is
+# not a plain key but a resolver command, kept in the shared jev-fabric file
+# below, so the service sources that instead of copying a secret into a unit.
+set -eu
+
+home=${HOME:-/home/$(id -un)}
+config=${XDG_CONFIG_HOME:-$home/.config}
+
+if [ -r "$config/jev-fabric/pi-env.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$config/jev-fabric/pi-env.sh"
+fi
+
+exec "${REFLEX_PREFIX:-$home/.local/lib/reflex}/reflexd" "$@"

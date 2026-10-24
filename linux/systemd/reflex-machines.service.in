@@ -1,0 +1,7 @@
+[Unit]
+Description=Reflex SSH machine tunnel reconciler
+After=reflexd.service
+
+[Service]
+Type=oneshot
+ExecStart=@PREFIX@/bin/reflex-machines reconcile

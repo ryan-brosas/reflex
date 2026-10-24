@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+"""Index earlier Claude, pi and Codex sessions for reflexd.
+
+The daemon reads sessions.tsv (Past.bend) and offers the relevant few to Jev;
+this is the Linux port of the Mac app's SessionArchive. It reads only the head
+and tail of each session file, drops sessions that are live in herdr, and
+writes:
+
+  agent  id  cwd  title  last_prompt  age_hours  state
+
+Run it from a systemd timer. It is also safe to run by hand.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+HOME = Path(os.environ.get("HOME") or str(Path.home()))
+DATA = Path(os.environ.get("REFLEX_DATA") or (Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state") / "reflex"))
+OUT = DATA / "sessions.tsv"
+
+
+def clean(value) -> str:
+    if value is None:
+        return ""
+    return str(value).replace("\t", " ").replace("\n", " ").replace("\r", " ")
+
+
+def text_of(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        out = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in ("text", "input_text") and isinstance(part.get("text"), str):
+                out.append(part["text"])
+        return " ".join(out)
+    return ""
+
+
+def prompt_text(value) -> str:
+    text = text_of(value).strip()
+    while text.startswith(">"):
+        text = text[1:].strip()
+    if not text or text.startswith("<") or text.startswith("This session is being continued") or text.startswith("Caveat:"):
+        return ""
+    return text[:300]
+
+
+def lines(blob: bytes) -> list[dict]:
+    out = []
+    for raw in blob.split(b"\n"):
+        if not raw.strip():
+            continue
+        try:
+            value = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(value, dict):
+            out.append(value)
+    return out
+
+
+def read_file(path: Path) -> tuple[list[dict], list[dict]]:
+    stat = path.stat()
+    size = stat.st_size
+    with path.open("rb") as handle:
+        head = handle.read(96 * 1024)
+        tail = b""
+        if size > 96 * 1024:
+            start = max(0, size - 256 * 1024)
+            handle.seek(start)
+            tail = handle.read()
+    head_lines = lines(head)
+    # The tail starts in the middle of a line unless the file began there; the
+    # first partial line is not valid JSON and json.loads drops it.
+    tail_lines = lines(tail) if tail else head_lines
+    return head_lines, tail_lines
+
+
+def claude(path: Path, head: list[dict], tail: list[dict], modified: float):
+    ident = path.stem
+    cwd = next((line.get("cwd") for line in head if isinstance(line.get("cwd"), str)), "")
+    if not cwd:
+        return None
+    if any(line.get("isSidechain") is True and line.get("type") == "user" for line in head):
+        return None
+    everything = head + tail
+    title = ""
+    for line in reversed(everything):
+        if line.get("type") == "custom-title" and isinstance(line.get("customTitle"), str):
+            title = line["customTitle"]
+            break
+    if not title:
+        for line in reversed(everything):
+            if line.get("type") == "ai-title" and isinstance(line.get("aiTitle"), str):
+                title = line["aiTitle"]
+                break
+    last = ""
+    for line in reversed(tail):
+        if line.get("type") == "last-prompt" and isinstance(line.get("lastPrompt"), str):
+            last = line["lastPrompt"]
+            break
+    if not last:
+        for line in reversed(tail):
+            if line.get("type") == "user":
+                last = prompt_text((line.get("message") or {}).get("content") if isinstance(line.get("message"), dict) else "")
+                if last:
+                    break
+    first = ""
+    for line in head:
+        if line.get("type") == "user":
+            first = prompt_text((line.get("message") or {}).get("content") if isinstance(line.get("message"), dict) else "")
+            if first:
+                break
+    name = title or first or last
+    if not name:
+        return None
+    return ("claude", ident, cwd, name[:120], last, modified, "past")
+
+
+def pi(head: list[dict], tail: list[dict], modified: float):
+    meta = next((line for line in head if line.get("type") == "session"), None)
+    if not meta or not isinstance(meta.get("id"), str) or not isinstance(meta.get("cwd"), str):
+        return None
+
+    def user_text(line):
+        if line.get("type") != "message":
+            return ""
+        message = line.get("message")
+        if not isinstance(message, dict) or message.get("role") != "user":
+            return ""
+        return prompt_text(message.get("content"))
+
+    first = next((value for value in (user_text(line) for line in head) if value), "")
+    if not first:
+        return None
+    name = next((line.get("name") for line in head if line.get("type") == "session_info" and isinstance(line.get("name"), str)), "")
+    last = next((value for value in (user_text(line) for line in reversed(tail)) if value), first)
+    return ("pi", meta["id"], meta["cwd"], (name or first)[:120], last, modified, "past")
+
+
+def codex(head: list[dict], tail: list[dict], modified: float):
+    meta_line = next((line for line in head if line.get("type") == "session_meta"), None)
+    meta = meta_line.get("payload") if isinstance(meta_line, dict) else None
+    if not isinstance(meta, dict) or not isinstance(meta.get("id"), str) or not isinstance(meta.get("cwd"), str):
+        return None
+
+    def user_text(line):
+        payload = line.get("payload")
+        if not isinstance(payload, dict) or payload.get("role") != "user":
+            return ""
+        return prompt_text(payload.get("content"))
+
+    first = next((value for value in (user_text(line) for line in head) if value), "")
+    if not first:
+        return None
+    last = next((value for value in (user_text(line) for line in reversed(tail)) if value), first)
+    return ("codex", meta["id"], meta["cwd"], first[:120], last, modified, "past")
+
+
+def locate_reply(kind: str, ident: str) -> Path | None:
+    """Find the JSONL file behind a herdr agent session id."""
+    if kind == "pi" and ident.startswith("/"):
+        path = Path(ident)
+        if path.is_file():
+            return path
+    if kind == "claude":
+        root = HOME / ".claude/projects"
+        if root.is_dir():
+            for path in root.glob(f"*/{ident}.jsonl"):
+                if path.is_file():
+                    return path
+    elif kind == "pi":
+        root = HOME / ".pi/agent/sessions"
+        if root.is_dir():
+            for path in root.glob(f"*/*_{ident}.jsonl"):
+                if path.is_file():
+                    return path
+    return None
+
+
+def plain(md: str) -> str:
+    """Markdown as prose: no code, tables, rules or emphasis marks."""
+    out: list[str] = []
+    para = ""
+    code = False
+
+    def flush() -> None:
+        nonlocal para
+        if para:
+            out.append(para)
+            para = ""
+
+    for raw in md.splitlines():
+        text = raw.strip()
+        if text.startswith("```"):
+            code = not code
+            flush()
+            continue
+        if code:
+            continue
+        if not text or text.startswith("|") or all(ch in "-*_=" for ch in text):
+            flush()
+            continue
+        while text.startswith("#") or text.startswith(">"):
+            text = text[1:].strip()
+        for mark in ("**", "__", "`"):
+            text = text.replace(mark, "")
+        if text.startswith("- ") or text.startswith("* "):
+            flush()
+            para = "• " + text[2:]
+            continue
+        if len(text) > 2 and text[0].isdigit() and ". " in text[:4]:
+            flush()
+            para = text
+            continue
+        para += (" " if para else "") + text
+    flush()
+    return "\n".join(out)[:1200]
+
+
+def last_reply(path: Path) -> str | None:
+    """The last assistant text after the latest prompt, or None if incomplete."""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - 512 * 1024))
+            data = handle.read()
+    except OSError:
+        return None
+    for line in reversed(lines(data)):
+        if line.get("isSidechain") is True:
+            continue
+        if line.get("type") not in ("assistant", "user", "message"):
+            continue
+        message = line.get("message")
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "user" and line.get("isMeta") is not True and prompt_text(message.get("content")):
+            return None
+        if role != "assistant":
+            continue
+        text = text_of(message.get("content")).strip()
+        if text:
+            return plain(text)
+    return None
+
+
+def reply_command(kind: str, ident: str) -> int:
+    path = locate_reply(kind, ident)
+    if path is None:
+        print(json.dumps({"ok": False, "error": "session file not found"}))
+        return 1
+    print(json.dumps({"ok": True, "reply": last_reply(path) or ""}))
+    return 0
+
+
+def collect(agent: str, root: Path, depth: int):
+    if not root.is_dir():
+        return []
+    found = []
+    for path in root.rglob("*.jsonl"):
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            continue
+        if len(relative.parts) > depth:
+            continue
+        try:
+            found.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    found.sort(key=lambda item: item[0], reverse=True)
+    return [(agent, path, modified) for modified, path in found[:150]]
+
+
+def live_sessions() -> set[str]:
+    try:
+        run = subprocess.run(["herdr", "agent", "list"], capture_output=True, text=True, timeout=20)
+        data = json.loads(run.stdout or "{}")
+        agents = (data.get("result") or {}).get("agents") or []
+        out = set()
+        for agent in agents:
+            session = agent.get("agent_session") if isinstance(agent.get("agent_session"), dict) else {}
+            value = session.get("value")
+            if isinstance(value, str) and value:
+                out.add(value)
+        return out
+    except Exception:
+        return set()
+
+
+def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "reply":
+        if len(sys.argv) < 4:
+            print(json.dumps({"ok": False, "error": "kind and session are required"}))
+            return 2
+        return reply_command(sys.argv[2], sys.argv[3])
+    live = live_sessions()
+    files = []
+    files += collect("claude", HOME / ".claude/projects", 2)
+    files += collect("pi", HOME / ".pi/agent/sessions", 2)
+    files += collect("codex", HOME / ".codex/sessions", 4)
+
+    sessions = []
+    seen = set()
+    for agent, path, modified in files:
+        try:
+            head, tail = read_file(path)
+        except OSError:
+            continue
+        if agent == "claude":
+            row = claude(path, head, tail, modified)
+        elif agent == "pi":
+            row = pi(head, tail, modified)
+        else:
+            row = codex(head, tail, modified)
+        if not row:
+            continue
+        key = (row[0], row[1])
+        if key in seen:
+            continue
+        seen.add(key)
+        if row[1] in live or str(path) in live:
+            continue
+        sessions.append(row)
+
+    sessions.sort(key=lambda row: row[5], reverse=True)
+    sessions = sessions[:400]
+    now = time.time()
+    DATA.mkdir(parents=True, exist_ok=True)
+    body = ""
+    for row in sessions:
+        age = max(0, int((now - row[5]) / 3600))
+        fields = row[:5] + (age, row[6])
+        body += "\t".join(clean(value) for value in fields) + "\n"
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=DATA, prefix=".sessions.", delete=False
+        ) as handle:
+            temp = Path(handle.name)
+            handle.write(body)
+        os.chmod(temp, 0o600)
+        os.replace(temp, OUT)
+    finally:
+        if temp is not None and temp.exists():
+            temp.unlink()
+    print(f"reflex-sessions: {len(sessions)} earlier sessions")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

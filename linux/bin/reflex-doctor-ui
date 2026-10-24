@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Keep the onboarding report visible when launched from the Omarchy menu.
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+"$dir/reflex-doctor"
+rc=$?
+printf '\nPress Enter to close…'
+read -r _ || true
+exit "$rc"
