@@ -21,6 +21,7 @@ plugin=$config/omarchy/plugins/reflex
 unitdir=$config/systemd/user
 bindings=$config/hypr/bindings.conf
 hyprconf=$conf/hypr/reflex.conf
+luaconf=$conf/hypr/reflex.lua
 token=$conf/token
 envfile=$conf/env
 
@@ -90,11 +91,20 @@ say "reflexd: service enabled and started"
 
 # 4. the Omarchy shell plugin -------------------------------------------------
 
-mkdir -p "$plugin"
-install -m 644 "$here/omarchy/plugin/manifest.json" "$plugin/manifest.json"
-install -m 644 "$here/omarchy/plugin/Reflex.qml" "$plugin/Reflex.qml"
-install -m 644 "$here/omarchy/plugin/Api.qml" "$plugin/Api.qml"
-say "plugin: installed $plugin"
+# Two plugins, because the shell routes a plugin id to one surface: "reflex" is
+# the summonable overlay (sessions + ask), "reflex.sessions" is the bar widget
+# that carries the counts. Both talk to reflexd through the same Api.qml.
+overlay=$config/omarchy/plugins/reflex
+barwidget=$config/omarchy/plugins/reflex-sessions
+
+mkdir -p "$overlay" "$barwidget"
+install -m 644 "$here/omarchy/plugin/manifest.json" "$overlay/manifest.json"
+install -m 644 "$here/omarchy/plugin/Reflex.qml" "$overlay/Reflex.qml"
+install -m 644 "$here/omarchy/panel/manifest.json" "$barwidget/manifest.json"
+install -m 644 "$here/omarchy/panel/Bar.qml" "$barwidget/Bar.qml"
+install -m 644 "$here/omarchy/plugin/Api.qml" "$overlay/Api.qml"
+install -m 644 "$here/omarchy/plugin/Api.qml" "$barwidget/Api.qml"
+say "plugin: installed $overlay and $barwidget"
 
 if command -v omarchy-shell >/dev/null 2>&1; then
   omarchy-shell -q shell rescanPlugins
@@ -103,6 +113,11 @@ if command -v omarchy-shell >/dev/null 2>&1; then
   else
     say "plugin: not listed yet; run: omarchy-shell shell rescanPlugins"
   fi
+  # A third-party plugin is inert until shell.json names it: the overlay in
+  # plugins[], the widget in the bar's layout.
+  omarchy-shell -q shell enablePlugin reflex '{}'
+  omarchy-shell -q shell enablePlugin reflex.sessions '{"section":"right"}'
+  say "plugin: enabled the overlay and the bar widget (right section)"
   # Omarchy starts the shell with QS_DISABLE_FILE_WATCHER=1, so a plugin file is
   # only compiled at startup: without this the overlay stays on whatever
   # version was on disk when the session began.
@@ -120,19 +135,54 @@ fi
 
 # 5. keybindings --------------------------------------------------------------
 
+# Two config styles are in the wild: the classic Hyprland .conf tree, and the
+# newer Lua one (hyprland.lua with require("hypr.bindings")). When hyprland.lua
+# exists, hyprland.conf is not read at all, so a source line there would
+# silently do nothing; install into whichever this session actually reads.
+
 mkdir -p "$conf/hypr"
 install -m 644 "$here/hypr/reflex.conf" "$hyprconf"
-if [ -f "$bindings" ]; then
-  if ! grep -qF "$hyprconf" "$bindings"; then
-    cp "$bindings" "$bindings.bak-reflex-$(date -u +%Y%m%dT%H%M%SZ)"
+install -m 644 "$here/hypr/reflex.lua" "$luaconf"
+
+bindings_lua=$config/hypr/bindings.lua
+hypr_lua=$config/hypr/hyprland.lua
+lua_load='dofile((os.getenv("XDG_CONFIG_HOME") or (os.getenv("HOME") .. "/.config")) .. "/reflex/hypr/reflex.lua")'
+lua_marker='reflex/hypr/reflex.lua'
+
+backup() { cp "$1" "$1.bak-reflex-$(date -u +%Y%m%dT%H%M%SZ)"; }
+
+reload_hypr() {
+  command -v hyprctl >/dev/null 2>&1 && hyprctl reload >/dev/null 2>&1 || true
+}
+
+if [ -f "$hypr_lua" ] && [ -f "$bindings_lua" ]; then
+  if grep -qF "$lua_marker" "$bindings_lua"; then
+    say "keybinds: already loaded from $bindings_lua"
+  else
+    backup "$bindings_lua"
+    printf '\n-- Reflex (installed by linux/install-omarchy.sh)\n%s\n' "$lua_load" >> "$bindings_lua"
+    say "keybinds: loaded $luaconf from $bindings_lua"
+  fi
+  # A stale classic line would double-bind if this session ever read .conf again.
+  if [ -f "$bindings" ] && grep -qF "$hyprconf" "$bindings"; then
+    backup "$bindings"
+    grep -vF "$hyprconf" "$bindings" > "$bindings.tmp" && mv "$bindings.tmp" "$bindings"
+    say "keybinds: removed the stale .conf source line"
+  fi
+  reload_hypr
+elif [ -f "$bindings" ]; then
+  if grep -qF "$hyprconf" "$bindings"; then
+    say "keybinds: already sourced from $bindings"
+  else
+    backup "$bindings"
     printf '\n# Reflex (installed by linux/install-omarchy.sh)\nsource = %s\n' "$hyprconf" >> "$bindings"
     say "keybinds: sourced $hyprconf from $bindings"
-  else
-    say "keybinds: already sourced"
   fi
-  command -v hyprctl >/dev/null 2>&1 && hyprctl reload >/dev/null 2>&1 || true
+  reload_hypr
 else
-  say "keybinds: no $bindings; add:  source = $hyprconf"
+  say "keybinds: no Hyprland bindings file found; add one of:"
+  say "  source = $hyprconf"
+  say "  $lua_load"
 fi
 
 # 6. say what works -----------------------------------------------------------
@@ -142,7 +192,7 @@ say ""
 say "Reflex is up on 127.0.0.1:${port:-47823}."
 say ""
 say "  SUPER ALT R      every session, and every question waiting on you"
-say "  SUPER ALT SPACE  the ask bar"
+say "  SUPER ALT A      the ask bar"
 say ""
 say "Check it:  curl -s -H \"authorization: Bearer \$(cat $token)\" localhost:${port:-47823}/api/health"
 say "Logs:      journalctl --user -u reflexd -f"

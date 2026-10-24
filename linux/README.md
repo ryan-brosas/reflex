@@ -17,17 +17,26 @@ SwiftTerm and menu-bar code — so this layer replaces it rather than compiling 
 
 ## What works today
 
+`linux/TRANSLATION.md` maps every surface of the macOS app to the
+Omarchy/Wayland thing that replaces it, and says what is still missing.
+
 Verified on Omarchy 4.0.6 / Hyprland 0.56.2 / herdr 0.9.1 / Bend 2.0.39:
 
 - `reflexd` builds and runs as a systemd user service, and talks to this
   machine's herdr over its socket.
+- **Bar widget** (the menu-bar icon, translated): three dots in the Omarchy
+  bar — amber when an agent waits on you, blue while agents work, dim when all
+  are idle — with a count of waiting questions, a popup listing the question
+  options and every session, and the ask bar on right-click. It polls quickly
+  on the focused output and slowly on the others, so seven monitors do not ask
+  seven times a second.
 - **Sessions list** (`SUPER ALT R`): every live agent herdr reports, blocked
   ones first, with its state, folder and title. `enter` focuses that pane in
   herdr.
 - **Questions** (`1` `2` `3` or `enter` on an option): inbox items that wait on
   you, with their options, answered through `POST /api/answer`. Claude Code's
   folder-trust prompt and its `AskUserQuestion` cards arrive this way.
-- **Ask bar** (`SUPER ALT SPACE`): type a request, get Jev's ranked
+- **Ask bar** (`SUPER ALT A`, or right-click the bar dots): type a request, get Jev's ranked
   destinations with weights (its pick on top), and `enter` sends it —
   `spawn`, `prompt`, `resume`, `press` and `btw`/`fork` actions all map to
   their endpoint. Without a Jev credential the same list still appears from
@@ -49,10 +58,10 @@ stubbed:
 
 | macOS surface | What it needs on Linux | Notes |
 |---|---|---|
-| Edge tab / rail on the right screen edge | a `bar-widget` plugin with counts, or a layer-shell surface with `WlrLayershell.layer: Top` and an exclusion zone | Hyprland has no hover-reveal reserved edge; the bar widget is the honest equivalent |
-| Menu-bar icon with counts | the same bar widget, `omarchy-shell shell enablePlugin reflex.sessions '{"section":"right"}'` | the overlay has the counts today, in its header |
+| Edge tab / rail on the right screen edge | a layer-shell surface with `WlrLayershell.layer: Overlay` and an exclusion zone for the reserved strip | Hyprland has no hover-reveal reserved edge; the bar widget carries the signal meanwhile |
+| Menu-bar icon with counts | `reflex.sessions` bar widget (installed and placed in the bar's right section) | done |
 | Embedded terminals (SwiftTerm + herdr attach) | `herdr agent attach <pane>` in the user's terminal (`xdg-terminal-exec`) | `enter` currently focuses herdr's own pane instead |
-| ⌥⌥ double-tap | `SUPER ALT SPACE` | Hyprland bindings cannot fire on a multi-tap |
+| ⌥⌥ double-tap | `SUPER ALT A` | Hyprland bindings cannot fire on a multi-tap |
 | Phone pairing QR | serve `web/` to the phone (reflexd already does) and show the QR from `/api/pair` | needs Tailscale reachable from the host |
 | Other Macs over SSH | `herdr machine add` plus tunnels (the app opened them) | reflexd already understands `machine:/path` and `machine/pane` |
 | Keep awake | `systemd-inhibit --what=idle` while agents work | or Hyprland `idle` inhibitors |
@@ -68,9 +77,11 @@ stubbed:
 - `~/.config/reflex/env` (0600) — port, roots, harness, token
 - `~/.config/reflex/token` (0600) — the bearer token, written once
 - `~/.config/systemd/user/reflexd.service` — enabled and started
-- `~/.config/omarchy/plugins/reflex/` — the shell plugin
-- `~/.config/reflex/hypr/reflex.conf` — sourced from your `bindings.conf`
-  (with a timestamped backup)
+- `~/.config/omarchy/plugins/reflex/` — the overlay plugin (sessions + ask)
+- `~/.config/omarchy/plugins/reflex-sessions/` — the bar widget
+- `~/.config/reflex/hypr/reflex.conf` **or** `reflex.lua` — whichever config
+  style the session reads (see Keybinds), loaded from `bindings.conf` or
+  `bindings.lua` with a timestamped backup
 
 Then `linux/uninstall-omarchy.sh [--purge]`. `--purge` also deletes the token,
 routing memory and the folder index.
@@ -79,6 +90,21 @@ The installer restarts the Omarchy shell once, at the end: Omarchy starts it wit
 `QS_DISABLE_FILE_WATCHER=1`, so a new or edited plugin file is only compiled
 after `omarchy-restart-shell` (or a re-login). That also means editing
 `~/.config/omarchy/plugins/reflex/*.qml` needs the same restart.
+
+## Keybinds
+
+Hyprland can be configured two ways, and the installer checks which one this
+session uses: with `~/.config/hypr/hyprland.lua` present, `hyprland.conf` is not
+read at all, so a `source` line there silently does nothing. It loads
+`reflex.lua` from `bindings.lua` in that case, and appends a `source` line to
+`bindings.conf` otherwise.
+
+    SUPER ALT R    sessions and questions      o.bind("SUPER + ALT + R", …)
+    SUPER ALT A    the ask bar                 o.bind("SUPER + ALT + A", …)
+
+`SUPER ALT SPACE` was the first choice for ask and is taken (Omarchy's apps
+menu), which is why it moved to A. A binding cannot fire on a double tap of
+Option, which is what the macOS app listens for.
 
 ## Requirements
 

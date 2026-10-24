@@ -29,6 +29,16 @@ Item {
 
   readonly property bool ready: tokenLoaded && token !== ""
 
+  // A JSON array that crossed into QML arrives either as a plain array or as a
+  // list-like copy of it, so every read of a reply goes through here instead of
+  // Array.isArray, which is false for the second kind.
+  function listOf(value) {
+    if (value === undefined || value === null) return []
+    if (Array.isArray(value)) return value
+    if (typeof value.length === "number") return Array.prototype.slice.call(value)
+    return []
+  }
+
   function get(path, tag) { api.send("GET", path, "", tag) }
   function post(path, body, tag) { api.send("POST", path, body === undefined ? "{}" : body, tag) }
 

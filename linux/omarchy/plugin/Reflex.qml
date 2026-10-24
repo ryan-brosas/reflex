@@ -115,15 +115,9 @@ Item {
 
   // ---------------------------------------------------------------- reading
 
-  // A JSON array that crossed into QML can arrive as a plain array or as a
-  // list-like copy, so every read of a reply goes through here instead of
-  // Array.isArray.
-  function listOf(value) {
-    if (value === undefined || value === null) return []
-    if (Array.isArray(value)) return value
-    if (typeof value.length === "number") return Array.prototype.slice.call(value)
-    return []
-  }
+  // One implementation, in Api.qml, because both this and the bar widget read
+  // the same replies.
+  function listOf(value) { return api.listOf(value) }
 
   function questionsOf(items) {
     var out = []

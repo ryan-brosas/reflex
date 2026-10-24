@@ -17,6 +17,7 @@ plugin=$config/omarchy/plugins/reflex
 unit=$config/systemd/user/reflexd.service
 bindings=$config/hypr/bindings.conf
 hyprconf=$conf/hypr/reflex.conf
+luaconf=$conf/hypr/reflex.lua
 
 say() { printf '%s\n' "$*"; }
 
@@ -29,13 +30,23 @@ rm -rf "$plugin"
 command -v omarchy-shell >/dev/null 2>&1 && omarchy-shell -q shell rescanPlugins || true
 say "plugin: removed $plugin"
 
+bindings_lua=$config/hypr/bindings.lua
+
 if [ -f "$bindings" ] && grep -qF "$hyprconf" "$bindings"; then
   cp "$bindings" "$bindings.bak-reflex-$(date -u +%Y%m%dT%H%M%SZ)"
   grep -vF "$hyprconf" "$bindings" | sed -e :a -e '/^\n*$/{$d;N;};/\n$/ba' > "$bindings.tmp"
   mv "$bindings.tmp" "$bindings"
-  say "keybinds: removed the source line"
+  say "keybinds: removed the .conf source line"
 fi
-rm -f "$hyprconf"
+
+if [ -f "$bindings_lua" ] && grep -qF 'reflex/hypr/reflex.lua' "$bindings_lua"; then
+  cp "$bindings_lua" "$bindings_lua.bak-reflex-$(date -u +%Y%m%dT%H%M%SZ)"
+  grep -vF 'reflex/hypr/reflex.lua' "$bindings_lua" > "$bindings_lua.tmp"
+  mv "$bindings_lua.tmp" "$bindings_lua"
+  say "keybinds: removed the Lua load line"
+fi
+
+rm -f "$hyprconf" "$conf/hypr/reflex.lua"
 rmdir "$conf/hypr" 2>/dev/null || true
 
 rm -rf "$prefix"
