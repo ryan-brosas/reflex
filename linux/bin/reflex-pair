@@ -24,8 +24,12 @@ fi
 
 code=$(openssl rand -hex 16)
 umask 077
-echo "$code" > "$file"
-chmod 600 "$file"
+tmp=$(mktemp "$state/.pair.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+printf '%s' "$code" > "$tmp"
+chmod 600 "$tmp"
+mv -f "$tmp" "$file"
+trap - EXIT
 
 host="${REFLEX_PAIR_HOST:-}"
 if [ -z "$host" ] && command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; then
@@ -48,10 +52,14 @@ port="${REFLEX_PORT:-}"
 if [ -z "$port" ] && [ -r "$HOME/.config/reflex/env" ]; then
   port=$(sed -n 's/^REFLEX_PORT=//p' "$HOME/.config/reflex/env" | tail -n 1)
 fi
-[ -n "$port" ] || port=47823
+case "$port" in
+  ''|*[!0-9]*) port=47823 ;;
+esac
 
 # Expire without another service. Compare when the timer fires, not at launch.
-nohup sh -c "sleep 600; current=\$(cat '$file' 2>/dev/null || true); [ \"\$current\" = '$code' ] && : > '$file'" >/dev/null 2>&1 &
+# Pass paths and the code as arguments so a home directory with quotes or
+# spaces cannot change the shell fragment.
+nohup sh -c 'sleep 600; current=$(cat "$1" 2>/dev/null || true); [ "$current" = "$2" ] && : > "$1"' _ "$file" "$code" >/dev/null 2>&1 &
 disown 2>/dev/null || true
 
 echo "http://$host:$port/?p=$code"

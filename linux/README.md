@@ -20,7 +20,7 @@ SwiftTerm and menu-bar code — so this layer replaces it rather than compiling 
 `linux/TRANSLATION.md` maps every surface of the macOS app to the
 Omarchy/Wayland thing that replaces it, and says what is still missing.
 
-Verified on Omarchy 4.0.6 / Hyprland 0.56.2 / herdr 0.9.1 (the layer; the daemon builds with the pinned Bend 2.0.39, see Requirements):
+The Linux layer was verified on Omarchy 4.0.6 / Hyprland 0.56.2 / herdr 0.9.1. The daemon builds with the pinned Bend 2.0.39 (see Requirements):
 
 - `reflexd` builds and runs as a systemd user service, and talks to this
   machine's herdr over its socket.
@@ -78,8 +78,8 @@ Verified on Omarchy 4.0.6 / Hyprland 0.56.2 / herdr 0.9.1 (the layer; the daemon
   checks in a normal app window: daemon health, token mode, herdr socket, Jev
   credential, bind, plugins, session timer, pairing prerequisites, saved
   machines, Bend version and battery availability. It never prints a secret.
-- **Earlier sessions** are indexed every five minutes by
-  `reflex-sessions.timer`: Claude, pi and Codex session files become the same
+- **Earlier sessions** are indexed on the cadence in
+  `reflex-sessions.timer` (currently every 120 s): Claude, pi and Codex session files become the same
   `sessions.tsv` the Mac app wrote, live herdr panes are dropped, and
   `/api/sessions` powers `/resume`.
 - **Keeps the session awake** while any visible agent is working:
@@ -151,35 +151,30 @@ A real run: the ask bar routed `add tests to the reflex daemon` to
 "new claude in reflex" at 90%, spawned Claude Code in the folder, and the
 folder-trust prompt came back as a question card through the same inbox.
 
-## What is not here yet
+## Limits and gaps
 
-The macOS app is not a thin client. Full-screen TUIs exercised in the embedded
-terminal — `btop`, `less`, `nvim`, `yazi` and `fzf` — enter and leave the
-alternate screen, and `nvim` handled application-cursor arrows and resize;
-unsupported TUIs and IME composition with a configured engine still need
-`external`. The embedded terminal handles alternate screen, wide characters,
-mouse, wheel, text and resize through herdr's control channel, and the ask bar
-and terminal have TextInput composition sinks. fcitx5 Pinyin is installed, but
-Quickshell's TextInput surfaces received keys as plain text and never gained a
-fcitx input context, so CJK composition remains external until the shell's
-text-input path supports it. A minimal standalone Quickshell `TextInput` showed
-the same behavior, so this is not specific to Reflex's hidden sink. The
-`external` path was verified in native `foot` and Alacritty: fcitx showed a
-`nihao` preedit, the candidate list, and committed a CJK character. The bar's reply/gist inbox is read-only, and a battery readout
-does not apply to this desktop. `@machine` works when a
-machine profile has a live tunnel; the tunnel and remote folder scan were
-exercised against a disposable loopback sshd, but no remote machine is saved on
-this box. The edge rail reserves a fixed 6 px strip (`REFLEX_RAIL_RESERVE=0`
-opts out), and attachments support dropped files, copied images and thumbnails.
-Unbuilt surfaces are not stubbed:
+The macOS app is not a thin client. The embedded terminal's capabilities and
+its remaining limits are recorded in the table below. TextInput composition
+sinks exist in the ask bar and terminal, but fcitx5 Pinyin is installed and
+Quickshell's TextInput surfaces (including a minimal standalone `TextInput`)
+still receive keys as plain text without a fcitx input context; CJK composition
+and unsupported full-screen TUIs need `external`. The `external` path was
+verified in native `foot` and Alacritty: fcitx showed a `nihao` preedit, the
+candidate list, and committed a CJK character. The bar's reply/gist inbox is
+read-only; the battery readout is not implemented (keep-awake uses
+`systemd-inhibit`); `@machine` needs a live machine profile and the tunnel and
+remote folder scan have only been exercised against a disposable loopback
+sshd, not a real remote host. The edge rail reserves a fixed 6 px strip
+(`REFLEX_RAIL_RESERVE=0` opts out), and attachments support dropped files,
+copied images and thumbnails.
 
 | macOS surface | What it needs on Linux | Notes |
 |---|---|---|
 | Inbox replies and gists | the bar panel lists questions, updates and sessions; a selected update shows a cleaned gist and, for a `ready` item, the last assistant reply from its session file | replies and gists are read-only views; opening an item still routes through its agent |
 | Native terminal fidelity | embedded window handles ANSI frames, alternate screen, wide characters, text, named keys, mouse, wheel, resize and a `history` view through `herdr terminal session control`; `btop`, `less`, `nvim`, `yazi` and `fzf` were exercised full-screen; Pinyin is installed but Quickshell's TextInput surfaces do not receive a fcitx context, so IME and unsupported TUIs still need `external` | use the native terminal when IME or unsupported full-screen fidelity matters |
-| Battery readout | this desktop has no battery; `reflex-doctor` says so | keep-awake is already wired to `systemd-inhibit` |
+| Battery readout | battery readout is not implemented; `reflex-doctor` reports the limitation | keep-awake is already wired to `systemd-inhibit` |
 | ⌥⌥ double-tap | `SUPER ALT A` | Hyprland bindings cannot fire on a multi-tap |
-| Client-side slash tokens (`/new`, `/folder`, `/resume`, `/btw`, `/paste`, `/pair`, `/doctor`, `/machines`, `/settings`, `/setup`, `@machine`) | Mac `CommandBar` token grammar | all are handled; `@machine` needs a live machine profile | partial |
+| Client-side slash tokens (`/new`, `/folder`, `/resume`, `/btw`, `/paste`, `/pair`, `/doctor`, `/machines`, `/settings`, `/setup`, `@machine`) | Mac `CommandBar` token grammar | all are handled; `@machine` needs a live machine profile; partial |
 
 ## Install
 
@@ -252,8 +247,10 @@ Option, which is what the macOS app listens for.
 
 ## Configuration
 
-`~/.config/reflex/env` is a systemd `EnvironmentFile` — reflexd's own variables,
-unchanged from the macOS table in the top-level README. The two worth editing:
+`~/.config/reflex/env` is a systemd `EnvironmentFile` written by
+`install-omarchy.sh`. It defines `REFLEX_PORT`, `REFLEX_BIND`,
+`REFLEX_TOKEN`, `REFLEX_DATA`, `REFLEX_WEB`, `REFLEX_SCAN`, `REFLEX_FORK`,
+`REFLEX_ROOTS` and `REFLEX_HARNESS`. The two worth editing:
 
     REFLEX_ROOTS=~/Projects:~/src        # where the folder index looks
     REFLEX_HARNESS=claude                # agent for a new session
@@ -324,8 +321,7 @@ registration pointing at a path you can delete yourself.
 
     systemctl --user status reflexd        # the daemon
     journalctl --user -u reflexd -f        # its log (it prints the ready line)
-    omarchy-shell shell listPlugins | tr ',' '
-' | grep reflex
+    omarchy-shell shell listPlugins | tr ',' '\n' | grep reflex
     omarchy-restart-shell                  # after editing the plugin
 
 - **"http 401"** — the token file and the service env disagree. Re-run the

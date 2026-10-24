@@ -17,11 +17,9 @@ import readline from "node:readline";
 
 const port = process.env.REFLEX_PORT || "47823";
 const base = `http://127.0.0.1:${port}`;
-const tokenFile = path.join(
-  process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
-  "reflex",
-  "token",
-);
+// The installer and reflexd use ~/.config/reflex regardless of
+// XDG_CONFIG_HOME; resolve the same file here instead of inventing a second path.
+const tokenFile = path.join(os.homedir(), ".config", "reflex", "token");
 
 function token(): string {
   return fs.readFileSync(tokenFile, "utf8").trim();
@@ -34,7 +32,12 @@ async function api(method: "GET" | "POST", route: string, body?: unknown): Promi
     headers["content-type"] = "application/json";
     payload = JSON.stringify(body);
   }
-  const res = await fetch(base + route, { method, headers, body: payload });
+  const res = await fetch(base + route, {
+    method,
+    headers,
+    body: payload,
+    signal: AbortSignal.timeout(8000),
+  });
   const text = await res.text();
   if (!res.ok) throw new Error(`reflexd ${res.status}: ${text.slice(0, 300)}`);
   try {
@@ -141,7 +144,9 @@ function query(args: Record<string, unknown>) {
   const params = new URLSearchParams();
   for (const key of ["q", "machine"]) {
     const value = args[key];
-    if (typeof value === "string" && value !== "") params.set(key, value);
+    if (value === undefined || value === null || value === "") continue;
+    if (typeof value !== "string") throw new Error(`${key} must be a string`);
+    params.set(key, value);
   }
   const text = params.toString();
   return text === "" ? "" : `?${text}`;
@@ -234,6 +239,10 @@ for await (const line of lines) {
     message = JSON.parse(text);
   } catch {
     fail(null, -32700, "invalid JSON");
+    continue;
+  }
+  if (message === null || typeof message !== "object" || Array.isArray(message)) {
+    fail(null, -32600, "invalid request");
     continue;
   }
   await handle(message);

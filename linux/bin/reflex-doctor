@@ -8,6 +8,12 @@ say() { printf '%s\n' "$*"; }
 good() { say "  ok    $*"; ok=$((ok + 1)); }
 warnc() { say "  warn  $*"; warn=$((warn + 1)); }
 badc() { say "  fail  $*"; bad=$((bad + 1)); }
+as_count() {
+  case "$1" in
+    ""|*[!0-9]*) printf '0' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
 
 say "Reflex doctor"
 say "============="
@@ -32,7 +38,7 @@ if [ -r "$HOME/.config/jev-fabric/pi-env.sh" ]; then good "jev credential file e
 
 bind=$(ss -ltn 2>/dev/null | awk '$4 ~ /:47823$/ {print $4; exit}')
 case "$bind" in
-  0.0.0.0:*|[::]:*) good "reflexd is listening for the phone ($bind)" ;;
+  0.0.0.0:*|[[]::]:*) good "reflexd is listening for the phone ($bind)" ;;
   127.0.0.1:*) warnc "reflexd is loopback-only; run reflex-remote on to pair a phone" ;;
   *) warnc "reflexd bind not recognized ($bind)" ;;
 esac
@@ -68,26 +74,34 @@ helper="$HOME/.local/lib/reflex/bin/reflex-machines"
 profiles=0
 active=0
 if [ -x "$helper" ]; then
-  profiles=$("$helper" list --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
-  active=$("$helper" list --json 2>/dev/null | jq '[.[] | select(.active)] | length' 2>/dev/null || echo 0)
+  list=$("$helper" list --json 2>/dev/null || true)
+  profiles=$(printf '%s' "$list" | jq 'length' 2>/dev/null || true)
+  active=$(printf '%s' "$list" | jq '[.[] | select(.active)] | length' 2>/dev/null || true)
+  profiles=$(as_count "$profiles")
+  active=$(as_count "$active")
 fi
-if [ "$profiles" -gt 0 ] 2>/dev/null; then
-  if [ "$active" -gt 0 ] 2>/dev/null; then
+if [ "$profiles" -gt 0 ]; then
+  if [ "$active" -gt 0 ]; then
     good "$profiles SSH machine profile(s); $active tunnel(s) active"
   else
     warnc "$profiles SSH machine profile(s); no tunnel is active"
   fi
 else
-  saved=$(herdr machine list --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
-  if [ "$saved" -gt 0 ] 2>/dev/null; then
+  if command -v herdr >/dev/null 2>&1; then
+    saved=$(herdr machine list --json 2>/dev/null | jq 'length' 2>/dev/null || true)
+    saved=$(as_count "$saved")
+  else
+    saved=0
+  fi
+  if [ "$saved" -gt 0 ]; then
     warnc "$saved herdr machine(s) saved; add a reflex-machines profile to forward the socket"
   else
     warnc "no SSH machine profiles; @machine needs one"
   fi
 fi
 
-folders=$(find "$HOME/.local/state/reflex/machines" -maxdepth 1 -name '*.folders' -type f -size +0c 2>/dev/null | wc -l)
-if [ "${folders:-0}" -gt 0 ] 2>/dev/null; then
+folders=$(find "$HOME/.local/state/reflex/machines" -maxdepth 1 -name '*.folders' -type f -size +0c -print -quit 2>/dev/null | wc -l)
+if [ "${folders:-0}" -gt 0 ]; then
   good "$folders remote folder cache(s) ready for @machine"
 else
   warnc "no remote folder cache yet; connect a profile, then run reflex-machines index"
@@ -117,9 +131,9 @@ else
 fi
 
 if find /sys/class/power_supply -maxdepth 1 -name 'BAT*' -print -quit 2>/dev/null | grep -q .; then
-  good "battery present"
+  warnc "battery present; battery readout is not implemented"
 else
-  warnc "no battery on this desktop; battery readout is not applicable"
+  warnc "no battery; battery readout is not applicable"
 fi
 
 say ""

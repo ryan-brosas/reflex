@@ -78,11 +78,9 @@ def read_file(path: Path) -> tuple[list[dict], list[dict]]:
             handle.seek(start)
             tail = handle.read()
     head_lines = lines(head)
+    # The tail starts in the middle of a line unless the file began there; the
+    # first partial line is not valid JSON and json.loads drops it.
     tail_lines = lines(tail) if tail else head_lines
-    if tail:
-        # The tail starts in the middle of a line unless the file began there;
-        # the first partial line is not valid JSON and json.loads drops it.
-        pass
     return head_lines, tail_lines
 
 
@@ -345,10 +343,18 @@ def main() -> int:
         age = max(0, int((now - row[5]) / 3600))
         fields = row[:5] + (age, row[6])
         body += "\t".join(clean(value) for value in fields) + "\n"
-    temp = OUT.with_suffix(".tmp")
-    temp.write_text(body, encoding="utf-8")
-    os.chmod(temp, 0o600)
-    os.replace(temp, OUT)
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=DATA, prefix=".sessions.", delete=False
+        ) as handle:
+            temp = Path(handle.name)
+            handle.write(body)
+        os.chmod(temp, 0o600)
+        os.replace(temp, OUT)
+    finally:
+        if temp is not None and temp.exists():
+            temp.unlink()
     print(f"reflex-sessions: {len(sessions)} earlier sessions")
     return 0
 

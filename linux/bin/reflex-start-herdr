@@ -3,7 +3,8 @@
 # install-omarchy.sh when herdr is present; a terminal is only the fallback for
 # an older install or a machine without a user systemd bus.
 set -u
-if systemctl --user start herdr.service 2>/dev/null; then
+if systemctl --user start herdr.service 2>/dev/null &&
+   systemctl --user is-active --quiet herdr.service; then
   exit 0
 fi
 exec omarchy-launch-terminal-herdr

@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import time
 
 
@@ -64,8 +65,25 @@ def load_target(path: str):
         return "", "", {}
     with open(path, "r", encoding="utf-8") as handle:
         raw = handle.read()
-    start = raw.find("{")
-    if start < 0:
+    # Find the opening brace outside comments and strings. A schema comment
+    # may itself contain a brace before the real object.
+    start = 0
+    while start < len(raw):
+        if raw[start].isspace():
+            start += 1
+            continue
+        if raw.startswith("//", start):
+            newline = raw.find("\n", start)
+            start = len(raw) if newline < 0 else newline + 1
+            continue
+        if raw.startswith("/*", start):
+            close = raw.find("*/", start + 2)
+            if close < 0:
+                raise SystemExit(f"menu: unterminated comment in {path}")
+            start = close + 2
+            continue
+        break
+    if start >= len(raw) or raw[start] != "{":
         raise SystemExit(f"menu: no object in {path}")
     prefix = raw[:start]
     if prefix and not prefix.endswith("\n"):
@@ -97,23 +115,31 @@ def backup(path: str) -> None:
 
 
 def write(path: str, prefix: str, comments: str, data: dict) -> None:
-    if not data:
-        if os.path.exists(path):
-            os.remove(path)
-        return
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    body = json.dumps(data, indent=2, ensure_ascii=False)
-    lines = body.splitlines(keepends=True)
-    if comments:
-        body = lines[0] + comments + "".join(lines[1:])
-    elif lines:
-        body = lines[0] + "  // Reflex rows are managed by linux/install-omarchy.sh.\n" + "".join(lines[1:])
-    text = prefix + body + "\n"
-    temp = path + ".tmp-reflex"
-    with open(temp, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    os.chmod(temp, 0o600)
-    os.replace(temp, path)
+    mode = 0o600
+    if os.path.exists(path):
+        mode = os.stat(path).st_mode & 0o777
+    if data:
+        body = json.dumps(data, indent=2, ensure_ascii=False)
+        lines = body.splitlines(keepends=True)
+        if comments:
+            body = lines[0] + comments + "".join(lines[1:])
+        text = prefix + body + "\n"
+    else:
+        # Keep the user-owned file and its schema comments when the last
+        # managed row is removed; do not delete the whole menu.
+        text = prefix + "{\n" + comments + "}\n"
+    handle, temp = tempfile.mkstemp(
+        prefix=".omarchy-menu.", dir=os.path.dirname(path) or "."
+    )
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        os.chmod(temp, mode)
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
 
 
 def main() -> None:
@@ -129,12 +155,20 @@ def main() -> None:
         if not isinstance(rows, dict) or "reflex" not in rows:
             raise SystemExit(f"menu: {source} has no reflex rows")
         prefix, comments, data = load_target(target)
-        changed = any(data.get(key) != value for key, value in rows.items())
+        managed = [key for key in data if key == "reflex" or key.startswith("reflex.")]
+        changed = any(data.get(key) != value for key, value in rows.items()) or any(
+            key not in rows for key in managed
+        )
         if not changed:
             print(f"menu: Reflex rows already current in {target}")
             return
         if os.path.exists(target):
             backup(target)
+        # Drop stale managed rows so removing a row from the source also
+        # removes it from the user's menu.
+        for key in managed:
+            if key not in rows:
+                del data[key]
         data.update(rows)
         write(target, prefix, comments, data)
         print(f"menu: installed Reflex rows in {target}")
