@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# One-stop onboarding/readiness report. It prints checks, never secrets, and
+# does not change services. Run it from a terminal or the Reflex menu row.
+set -u
+
+ok=0; warn=0; bad=0
+say() { printf '%s\n' "$*"; }
+good() { say "  ok    $*"; ok=$((ok + 1)); }
+warnc() { say "  warn  $*"; warn=$((warn + 1)); }
+badc() { say "  fail  $*"; bad=$((bad + 1)); }
+
+say "Reflex doctor"
+say "============="
+
+if curl -fsS --max-time 2 http://127.0.0.1:47823/api/health >/dev/null 2>&1; then
+  good "reflexd answers /api/health"
+else
+  badc "reflexd does not answer on 127.0.0.1:47823"
+fi
+
+if [ -r "$HOME/.config/reflex/token" ]; then
+  mode=$(stat -c '%a' "$HOME/.config/reflex/token" 2>/dev/null || echo '?')
+  if [ "$mode" = 600 ]; then good "bearer token is 0600"; else warnc "bearer token mode is $mode"; fi
+else
+  badc "no ~/.config/reflex/token; run linux/install-omarchy.sh"
+fi
+
+if systemctl --user is-active --quiet reflexd.service; then good "reflexd.service is active"; else badc "reflexd.service is not active"; fi
+
+if [ -S "$HOME/.config/herdr/herdr.sock" ]; then good "herdr socket exists"; else warnc "herdr socket missing; start herdr"; fi
+if [ -r "$HOME/.config/jev-fabric/pi-env.sh" ]; then good "jev credential file exists"; else warnc "no ~/.config/jev-fabric/pi-env.sh"; fi
+
+bind=$(ss -ltn 2>/dev/null | awk '$4 ~ /:47823$/ {print $4; exit}')
+case "$bind" in
+  0.0.0.0:*|[::]:*) good "reflexd is listening for the phone ($bind)" ;;
+  127.0.0.1:*) warnc "reflexd is loopback-only; run reflex-remote on to pair a phone" ;;
+  *) warnc "reflexd bind not recognized ($bind)" ;;
+esac
+
+if [ -d "$HOME/.config/omarchy/plugins/reflex" ] && [ -d "$HOME/.config/omarchy/plugins/reflex-sessions" ]; then
+  good "reflex and reflex.sessions plugins are installed"
+else
+  badc "plugin directories are incomplete; reinstall"
+fi
+
+if systemctl --user is-active --quiet reflex-sessions.timer; then
+  good "earlier-session timer is active"
+else
+  warnc "reflex-sessions.timer is not active"
+fi
+if [ -r "$HOME/.local/state/reflex/sessions.tsv" ]; then
+  n=$(wc -l < "$HOME/.local/state/reflex/sessions.tsv" 2>/dev/null || echo 0)
+  good "earlier-session index has $n rows"
+else
+  warnc "no earlier-session index yet"
+fi
+
+if command -v qrencode >/dev/null 2>&1; then good "qrencode is installed"; else warnc "qrencode missing; phone pairing has no QR"; fi
+if [ -r "$HOME/.local/state/reflex/pair.txt" ]; then warnc "a pairing code is waiting in pair.txt"; else good "no stale pairing code"; fi
+
+if command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; then
+  good "Tailscale is running"
+else
+  warnc "Tailscale is not running; use the same Wi-Fi for pairing"
+fi
+
+helper="$HOME/.local/lib/reflex/bin/reflex-machines"
+profiles=0
+active=0
+if [ -x "$helper" ]; then
+  profiles=$("$helper" list --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+  active=$("$helper" list --json 2>/dev/null | jq '[.[] | select(.active)] | length' 2>/dev/null || echo 0)
+fi
+if [ "$profiles" -gt 0 ] 2>/dev/null; then
+  if [ "$active" -gt 0 ] 2>/dev/null; then
+    good "$profiles SSH machine profile(s); $active tunnel(s) active"
+  else
+    warnc "$profiles SSH machine profile(s); no tunnel is active"
+  fi
+else
+  saved=$(herdr machine list --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+  if [ "$saved" -gt 0 ] 2>/dev/null; then
+    warnc "$saved herdr machine(s) saved; add a reflex-machines profile to forward the socket"
+  else
+    warnc "no SSH machine profiles; @machine needs one"
+  fi
+fi
+
+folders=$(find "$HOME/.local/state/reflex/machines" -maxdepth 1 -name '*.folders' -type f -size +0c 2>/dev/null | wc -l)
+if [ "${folders:-0}" -gt 0 ] 2>/dev/null; then
+  good "$folders remote folder cache(s) ready for @machine"
+else
+  warnc "no remote folder cache yet; connect a profile, then run reflex-machines index"
+fi
+
+if [ -x "$HOME/.local/lib/reflex/bin/reflex-settings" ]; then
+  good "settings helper is installed"
+else
+  warnc "reflex-settings is missing; reinstall"
+fi
+
+bend_bin=""
+for candidate in "${BEND:-}" "$HOME/Projects/reflex/build/tools/bend-2.0.39/bin/bend" "$HOME/.local/opt/bend-2.0.39/bin/bend" "$(command -v bend 2>/dev/null || true)"; do
+  [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+  bend_bin=$candidate
+  break
+done
+if [ -z "$bend_bin" ]; then
+  warnc "Bend is not installed; reflexd cannot be rebuilt"
+else
+  bend_line=$("$bend_bin" --help 2>/dev/null | head -n 1 || true)
+  case "$bend_line" in
+    *2.0.39*|*2.0.4*|*2.0.5*) good "Bend: $bend_line" ;;
+    *2.0.37*) warnc "global Bend 2.0.37 cannot rebuild reflexd; run linux/fetch-bend.sh for 2.0.39" ;;
+    *) warnc "Bend version unknown: $bend_line" ;;
+  esac
+fi
+
+if find /sys/class/power_supply -maxdepth 1 -name 'BAT*' -print -quit 2>/dev/null | grep -q .; then
+  good "battery present"
+else
+  warnc "no battery on this desktop; battery readout is not applicable"
+fi
+
+say ""
+say "$ok ok, $warn warning(s), $bad failure(s)"
+[ "$bad" -eq 0 ]

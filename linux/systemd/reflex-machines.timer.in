@@ -1,0 +1,10 @@
+[Unit]
+Description=Reconcile Reflex SSH machine tunnels
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+Unit=reflex-machines.service
+
+[Install]
+WantedBy=timers.target

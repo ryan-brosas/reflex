@@ -15,7 +15,7 @@
   },
   "barWidget": {
     "displayName": "Reflex",
-    "description": "A dot per state: amber when an agent waits on you, blue while agents work, dim when all are idle. Click for questions and sessions; right-click for the ask bar.",
+    "description": "A question count when an agent waits on you, a dim glyph when idle or herdr is offline. Click for questions and sessions; right-click for the ask bar.",
     "category": "AI",
     "aliases": [
       "reflex",

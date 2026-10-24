@@ -4,8 +4,13 @@
 -- bindings, so Reflex gets two explicit chords instead. Omarchy already owns
 -- SUPER ALT SPACE (apps menu), so ask sits on A.
 --
--- Both go through omarchy-shell, which owns the layer surfaces: the overlay
--- lands on the focused output and closes with esc.
+-- Sessions open in the bar widget's own panel slot, so they never cover the
+-- screen or take the keyboard away from your work. The ask window is a normal
+-- tiled toplevel on the active workspace, closed with esc or the ✕ button.
 
-o.bind("SUPER + ALT + R", "Reflex sessions", "omarchy-shell shell toggle reflex '{}'")
+o.bind("SUPER + ALT + R", "Reflex sessions and questions", "omarchy-shell shell toggle reflex.sessions '{}'")
 o.bind("SUPER + ALT + A", "Reflex ask", "omarchy-shell shell summon reflex '{\"mode\":\"ask\"}'")
+
+-- The ask surface is a normal toplevel and is deliberately NOT floated: it
+-- tiles like every other app. Toggle floating with the usual Hyprland bind if
+-- you want to drag it; the header drag and resize grip only apply then.

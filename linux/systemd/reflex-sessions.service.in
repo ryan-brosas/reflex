@@ -1,0 +1,8 @@
+[Unit]
+Description=Reflex earlier-session index
+After=reflexd.service
+
+[Service]
+Type=oneshot
+Environment=REFLEX_DATA=@STATE@/reflex
+ExecStart=@PREFIX@/bin/reflex-sessions
