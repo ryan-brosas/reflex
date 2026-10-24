@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "reflex",
+  "name": "Reflex",
+  "version": "0.1.0",
+  "author": "Ryan Brosas",
+  "license": "MIT",
+  "description": "Every coding agent you run in herdr — who is working, who waits on you, and one ask bar that routes with Jev.",
+  "kinds": [
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Reflex.qml"
+  }
+}
